@@ -5,11 +5,50 @@ import path from 'path';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import fs from 'fs';
+import dotenv from 'dotenv';
+
+// Automatically load .env file from current working directory or app root
+dotenv.config();
+const potentialEnvPaths = [
+  path.join(process.cwd(), '.env'),
+  path.join(process.cwd(), '..', '.env'),
+  path.resolve('.env'),
+  '/var/www/kalavritti-meet/.env'
+];
+for (const p of potentialEnvPaths) {
+  if (fs.existsSync(p)) {
+    dotenv.config({ path: p, override: false });
+  }
+}
+
+// Helper to get currently configured ADMIN_PASSWORD (from process.env or direct file read fallback)
+const getAdminPassword = (): string => {
+  if (process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.trim()) {
+    return process.env.ADMIN_PASSWORD.trim().replace(/^["']|["']$/g, '');
+  }
+  for (const envPath of potentialEnvPaths) {
+    if (fs.existsSync(envPath)) {
+      try {
+        const content = fs.readFileSync(envPath, 'utf8');
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('ADMIN_PASSWORD=')) {
+            const val = trimmed.substring('ADMIN_PASSWORD='.length).trim().replace(/^["']|["']$/g, '');
+            if (val) return val;
+          }
+        }
+      } catch (err) {
+        // Ignore read errors
+      }
+    }
+  }
+  return 'admin';
+};
 
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // Support reverse proxies (Nginx, Caddy, Cloudflare, VPS)
   app.set('trust proxy', 1);
@@ -532,8 +571,23 @@ async function startServer() {
 
   // Admin API Routes
   app.post('/api/admin/login', (req, res) => {
-    const { password } = req.body;
-    if (password === ADMIN_PASSWORD || password === 'admin' || password === 'kalavritti_admin') {
+    const rawPassword = req.body?.password;
+    if (typeof rawPassword !== 'string') {
+      return res.status(400).json({ error: 'Password required' });
+    }
+
+    const inputPassword = rawPassword.trim();
+    const currentAdminPassword = getAdminPassword();
+
+    // Check against configured ADMIN_PASSWORD, or defaults
+    const isValid = (
+      inputPassword === currentAdminPassword ||
+      rawPassword === currentAdminPassword ||
+      inputPassword === 'admin' ||
+      inputPassword === 'kalavritti_admin'
+    );
+
+    if (isValid) {
       const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
       res.cookie('admin_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production' });
       res.json({ success: true, token });

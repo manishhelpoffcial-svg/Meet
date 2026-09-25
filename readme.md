@@ -1,166 +1,179 @@
 # Kalavritti Meet — Production Subdomain VPS Deployment Guide (1GB RAM Optimized)
 
-This guide provides step-by-step instructions for deploying **Kalavritti Meet** on a **1 GB RAM VPS** (Ubuntu 22.04 / 24.04 or Debian) using a **subdomain** such as:
-**`meet.yourdomain.in`** (or `meet.yourdomain.com`).
-
-It includes:
-- **1GB VPS Memory Optimization**: Swap memory setup (preventing out-of-memory killed processes during `npm install` and `npm run build`), Node memory flags, and lightweight PM2 configuration.
-- **Subdomain DNS Setup**: Directing `meet.yourdomain.in` to your VPS IP without disturbing your primary root website or store.
-- **Nginx Reverse Proxy**: Full WebSocket (`Upgrade`) proxying for WebRTC live video and private customer rooms on the subdomain.
-- **Free Automated SSL**: Let's Encrypt SSL/TLS via Certbot exclusively for `meet.yourdomain.in`.
+Target Subdomain: **`meet.kalavritti.in`** (or your custom subdomain)  
+Target Server: **1 GB RAM Ubuntu/Debian VPS** (IP: e.g. `137.23.50.29`)
 
 ---
 
-## 1. Subdomain DNS Setup
+## ⚡ QUICK FIX: If Certbot says "Timeout during connect (likely firewall problem)"
 
-You do **not** need to touch your main domain (`@`) records if your main site is elsewhere. You only configure an **A Record** for the `meet` subdomain.
-
-1. Log into your DNS manager (Cloudflare, GoDaddy, Hostinger, Namecheap, BigRock, etc.).
-2. Navigate to **DNS Records** for `yourdomain.in`.
-3. Add an **A Record**:
-
-| Type | Name / Host | IPv4 Value / Points to | TTL |
-| :--- | :--- | :--- | :--- |
-| **A** | `meet` | `YOUR_VPS_PUBLIC_IP` | Auto / 300 seconds |
-
-> **Result**: After propagation, visiting `http://meet.yourdomain.in` will reach your VPS server.
-> *(If using Cloudflare, make sure the proxy status is **DNS Only (Grey Cloud)** during initial Certbot SSL setup, or ensure WebSockets are enabled in Network settings).*
-
----
-
-## 2. Server Preparation & 1GB RAM Optimization
-
-A 1 GB RAM VPS requires a swap file so that npm builds (`vite build` and TypeScript compile) run smoothly without getting killed by Linux's Out-Of-Memory (OOM) killer.
-
-### 2.1 Connect to your VPS
-```bash
-ssh root@YOUR_VPS_PUBLIC_IP
+If you encountered:
+```text
+Detail: 137.23.50.29: Fetching http://meet.kalavritti.in/.well-known/acme-challenge/...: Timeout during connect (likely firewall problem)
 ```
 
-### 2.2 Configure 2 GB Swap File (CRITICAL FOR 1GB RAM VPS)
-Run these commands to add 2 GB of virtual swap memory:
-```bash
-# Check if swap exists
-sudo swapon --show
+This error happens for one of two reasons:
+1. **The VPS firewall (UFW) or Cloud provider firewall (Security Group) is blocking Port 80 & 443.** Let's Encrypt **MUST** be able to reach Port 80 over plain HTTP to verify ownership before issuing the SSL certificate!
+2. **Cloudflare Proxy (Orange Cloud) is enabled.** Cloudflare's proxy will block direct ACME verification requests.
 
-# Create 2GB swap file
+### Immediate 3-Minute Fix:
+
+#### Step 1: Open Ports 80 and 443 on your VPS
+Run this directly on your VPS terminal:
+```bash
+# Allow HTTP (Port 80), HTTPS (Port 443), and SSH (Port 22)
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 'Nginx Full'
+sudo ufw enable
+sudo ufw reload
+```
+
+#### Step 2: Check Cloud Provider Firewall (Crucial!)
+If your VPS is on **AWS EC2, Oracle Cloud, DigitalOcean, Hetzner Cloud, Hostinger, Google Cloud, or Azure**, there is an **external firewall** in your web dashboard:
+- Go to your VPS cloud dashboard -> **Security Groups / Firewall / Networking**.
+- Ensure **Inbound Rules** include:
+  - **Port 80 (HTTP)**: Source `0.0.0.0/0` (Anywhere)
+  - **Port 443 (HTTPS)**: Source `0.0.0.0/0` (Anywhere)
+  - **Port 22 (SSH)**: Source `0.0.0.0/0` (or your IP)
+
+#### Step 3: If Using Cloudflare, Switch to "DNS Only" (Grey Cloud)
+- Go to your Cloudflare Dashboard -> **DNS**.
+- Find the `A` record for `meet`.
+- Change Proxy status from **Proxied (Orange Cloud)** to **DNS only (Grey Cloud)**.
+- Wait 60 seconds.
+
+#### Step 4: Ensure Nginx is running and listening on port 80
+```bash
+sudo systemctl restart nginx
+sudo systemctl status nginx
+```
+
+#### Step 5: Re-run Certbot
+```bash
+sudo certbot --nginx -d meet.kalavritti.in
+```
+It will now authenticate immediately and issue your SSL certificate!
+
+---
+
+## Complete Step-by-Step Deployment Guide
+
+---
+
+### 1. Subdomain DNS Setup
+
+In your domain registrar / DNS provider:
+
+| Type | Name / Host | Points to (IPv4) | Proxy Status (Cloudflare) | TTL |
+| :--- | :--- | :--- | :--- | :--- |
+| **A** | `meet` | `137.23.50.29` | **DNS Only (Grey Cloud)** | Auto / 300s |
+
+> Verify with `ping meet.kalavritti.in` on your computer. It should resolve to your VPS IP (`137.23.50.29`).
+
+---
+
+### 2. Server Preparation & 1GB RAM Optimization
+
+A 1 GB RAM VPS needs virtual swap memory so that `npm install` and Vite build never trigger the Linux Out-Of-Memory (OOM) killer.
+
+#### 2.1 Connect to your VPS
+```bash
+ssh root@137.23.50.29
+```
+
+#### 2.2 Configure 2 GB Swap File
+```bash
 sudo fallocate -l 2G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
-
-# Make swap permanent across reboots
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-
-# Optimize swap aggressiveness for 1GB VPS
 sudo sysctl vm.swappiness=20
 echo 'vm.swappiness=20' | sudo tee -a /etc/sysctl.conf
 ```
 
-### 2.3 Update Packages
+#### 2.3 Open Firewall Ports First (Prevents Certbot Timeout)
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl git ufw build-essential
+sudo apt install -y curl git ufw build-essential nginx certbot python3-certbot-nginx
+
+# Open required ports
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 'Nginx Full'
+sudo ufw --force enable
 ```
 
-### 2.4 Install Node.js (v20 LTS) & PM2
+#### 2.4 Install Node.js (v20 LTS) & PM2
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-
-# Verify versions
-node -v   # v20.x.x
-npm -v    # v10.x.x
-
-# Install PM2 process manager
 sudo npm install -g pm2
 ```
 
 ---
 
-## 3. Clone and Build the Application
+### 3. Clone and Build the Application
 
-### 3.1 Setup Project Directory
+#### 3.1 Project Directory
 ```bash
 sudo mkdir -p /var/www/kalavritti-meet
 sudo chown -R $USER:$USER /var/www/kalavritti-meet
 cd /var/www/kalavritti-meet
 
-# Clone your project files
+# Clone your repository files
 git clone <YOUR_GIT_REPO_URL> .
 ```
 
-### 3.2 Configure `.env` for Subdomain
+#### 3.2 Environment Variables (`.env`)
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-Enter your subdomain and production settings:
+Set:
 ```env
-# Full Subdomain URL (No trailing slash)
-APP_URL="https://meet.yourdomain.in"
-
-# Secure administrator password for https://meet.yourdomain.in/admin
-ADMIN_PASSWORD="YourStrongSecretAdminPassword123"
-
-# Strong JWT Secret for session tokens
-JWT_SECRET="EnterRandomSecretString_X98a72b10f543"
-
-# Port & Node Environment
+APP_URL="https://meet.kalavritti.in"
+ADMIN_PASSWORD="YourStrongAdminPasswordHere"
+JWT_SECRET="YourLongRandomJwtSecretString998811"
 NODE_ENV="production"
 PORT=3000
 ```
-Save and exit in `nano`: Press `Ctrl + O`, `Enter`, then `Ctrl + X`.
+Save with `Ctrl + O`, `Enter`, and exit with `Ctrl + X`.
 
-### 3.3 Build on 1GB VPS (Memory-Safe Mode)
-Run the install and build with Node's memory ceiling adjusted for a 1GB environment:
+#### 3.3 Build with Memory Ceiling for 1GB VPS
 ```bash
-# Install dependencies
 npm install
-
-# Build client and server bundle with memory limit
 NODE_OPTIONS="--max-old-space-size=768" npm run build
 ```
-This compiles the production assets into `dist/` and the server into `dist/server.cjs`.
 
 ---
 
-## 4. Run Application with PM2 (Memory-Capped)
+### 4. Start the Application with PM2
 
-Configure PM2 with a memory restart limit so it stays light on your 1GB VPS:
 ```bash
-# Start server with 400MB memory limit
+# Start background server capped at 400MB
 pm2 start dist/server.cjs --name "kalavritti-meet" --max-memory-restart 400M --time
 
-# Save PM2 state for automatic restart on server reboot
+# Enable auto-start on server reboot
 pm2 startup
-# (Copy and run the sudo env PATH=... command printed by PM2)
+# (Run the generated sudo env PATH=... command printed on screen)
 pm2 save
 ```
 
-Useful PM2 status commands:
-```bash
-pm2 status                  # Check memory & CPU usage
-pm2 logs kalavritti-meet    # View real-time logs
-pm2 restart kalavritti-meet # Restart server
-```
-
 ---
 
-## 5. Configure Nginx Reverse Proxy for Subdomain
+### 5. Configure Nginx Reverse Proxy for `meet.kalavritti.in`
 
-### 5.1 Install Nginx
+Create the Nginx configuration file:
 ```bash
-sudo apt install -y nginx
+sudo nano /etc/nginx/sites-available/meet.kalavritti.in
 ```
 
-### 5.2 Create Subdomain Configuration Block
-```bash
-sudo nano /etc/nginx/sites-available/meet.yourdomain.in
-```
-
-Paste the following Nginx configuration (replace `meet.yourdomain.in` with your exact subdomain):
+Paste the following:
 ```nginx
 map $http_upgrade $connection_upgrade {
     default upgrade;
@@ -170,30 +183,25 @@ map $http_upgrade $connection_upgrade {
 server {
     listen 80;
     listen [::]:80;
-    server_name meet.yourdomain.in;
+    server_name meet.kalavritti.in;
 
-    # Maximum upload for KYC snapshots
     client_max_body_size 25M;
-
-    # Optimize for 1GB VPS
     keepalive_timeout 65;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
 
-        # WebSocket support (Required for WebRTC signaling and rooms)
+        # WebSocket support for WebRTC signaling
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
 
-        # Domain and proxy headers
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
 
-        # WebSocket streaming timeouts
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
         proxy_connect_timeout 60s;
@@ -202,103 +210,50 @@ server {
 }
 ```
 
-### 5.3 Enable Site & Test Nginx
+Enable the configuration and reload Nginx:
 ```bash
-# Enable the subdomain config
-sudo ln -s /etc/nginx/sites-available/meet.yourdomain.in /etc/nginx/sites-enabled/
-
-# Remove default Nginx site if present
+sudo ln -s /etc/nginx/sites-available/meet.kalavritti.in /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
-
-# Check syntax
 sudo nginx -t
-
-# Reload Nginx
 sudo systemctl reload nginx
 ```
 
 ---
 
-## 6. Install Free SSL Certificate (HTTPS) for Subdomain
+### 6. Issue SSL Certificate (Certbot)
 
-WebRTC camera and microphone permissions (`getUserMedia`) are **blocked by web browsers on insecure HTTP**. An SSL certificate on your subdomain is mandatory.
-
-### 6.1 Install Certbot
+Now that Port 80 is open in UFW and your Cloud firewall, run:
 ```bash
-sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d meet.kalavritti.in
 ```
 
-### 6.2 Generate Certificate for Subdomain
-```bash
-sudo certbot --nginx -d meet.yourdomain.in
-```
-- Provide your email address for renewal notices.
-- Agree to the Terms of Service.
-- Certbot will automatically modify your Nginx block to redirect `http://meet.yourdomain.in` to `https://meet.yourdomain.in` and install the SSL certificate.
-
-### 6.3 Verify Auto-Renewal
-Certbot automatically installs a renewal timer. Verify with:
-```bash
-sudo certbot renew --dry-run
-```
+Certbot will automatically:
+1. Contact Let's Encrypt over Port 80 via `meet.kalavritti.in`.
+2. Validate domain ownership.
+3. Configure SSL certificates (`/etc/letsencrypt/live/meet.kalavritti.in/`).
+4. Automatically redirect all `http://` traffic to `https://meet.kalavritti.in`.
 
 ---
 
-## 7. Firewall (UFW) Security
+### 8. Admin Password (.env) & PM2 Restart
 
-Ensure only the necessary ports are opened:
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'
-sudo ufw --force enable
-sudo ufw status
-```
-
----
-
-## 8. Verifying Your Subdomain Deployment
-
-1. **Public Video Portal**:
-   - Open **`https://meet.yourdomain.in`** in your browser.
-   - You should see the secure padlock icon in the address bar.
-2. **Admin Management**:
-   - Access the admin portal at **`https://meet.yourdomain.in/admin`**.
-   - Enter your `ADMIN_PASSWORD` from `.env`.
-3. **Private Customer Rooms**:
-   - Click on the **Customer Rooms** tab.
-   - Configure duration (e.g. 1 hour up to 24 hours) and participant capacity.
-   - Click **Generate Private Room Link**.
-   - The generated guest link will be **`https://meet.yourdomain.in/room/pv-xxxxxx`**.
-   - The admin host link with management superpowers will be **`https://meet.yourdomain.in/room/pv-xxxxxx?adminKey=adm-xxxxxx`**.
-4. **Live Broadcast Studio**:
-   - From the Admin console, start the live broadcast camera.
-   - Open `https://meet.yourdomain.in/join` on a phone or another device to verify sub-second WebRTC streaming.
-5. **Audience Inspector**:
-   - View connected attendees, their IP address, and browser geolocation in real time.
-
----
-
-## 9. 1GB VPS Maintenance & Code Updates
-
-Whenever you make updates to the application:
+If you changed `ADMIN_PASSWORD` in `/var/www/kalavritti-meet/.env`, you must rebuild/restart PM2 so Node reloads the environment:
 
 ```bash
-cd /var/www/kalavritti-meet
-git pull origin main
+# 1. Edit .env
+nano /var/www/kalavritti-meet/.env
 
-# Build using swap-friendly memory limit
-NODE_OPTIONS="--max-old-space-size=768" npm run build
+# Example:
+# ADMIN_PASSWORD="your_new_password"
 
-# Restart PM2 app
-pm2 restart kalavritti-meet
+# 2. Restart PM2 with --update-env to flush old memory variables
+pm2 restart kalavritti-meet --update-env
+
+# 3. Verify server is running
+pm2 logs kalavritti-meet --lines 10
 ```
 
-### Monitor Memory Usage Anytime
-```bash
-# View RAM and Swap usage
-free -h
+> **Built-in Fallbacks**: 
+> - If `ADMIN_PASSWORD` is not set or empty, the server accepts `admin` or `kalavritti_admin`.
+> - Any surrounding quotes (`"..."` or `'...'`) and leading/trailing whitespace in `.env` are automatically trimmed by the server.
 
-# View PM2 memory footprint
-pm2 status
-```
-On idle, Kalavritti Meet will comfortably run using ~80MB–140MB of RAM, leaving plenty of headroom on your 1GB VPS.
