@@ -1,0 +1,10 @@
+{
+  "name": "Kalavritti Meet",
+  "description": "Kalavritti cultural multi-vendor e-commerce platform, Shefaro logistics integration, and live WebRTC broadcast and KYC verification system.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
